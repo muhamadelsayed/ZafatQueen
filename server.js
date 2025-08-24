@@ -27,22 +27,10 @@ const app = express();
 // **الإصلاح الرئيسي هنا: إعدادات CORS المخصصة للإنتاج**
 // ====================================================================
 // قائمة النطاقات المسموح لها بالوصول
-const allowedOrigins = [
-    'http://localhost:5173', // للسماح بالتطوير المحلي
-    'https://zafatqueen.com'   // **رابط الواجهة الأمامية المنشورة**
-];
-
 const corsOptions = {
-    origin: function (origin, callback) {
-        // السماح بالطلبات التي لا تحتوي على origin (مثل Postman أو تطبيقات الموبايل) أو الموجودة في القائمة
-        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
+    origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    credentials: true, // مهم للسماح بإرسال التوكن
+    credentials: false, // credentials must be false when origin is '*'
 };
 
 app.use(cors(corsOptions));
