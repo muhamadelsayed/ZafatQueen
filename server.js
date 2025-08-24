@@ -19,25 +19,46 @@ const Settings = require('./models/settingsModel');
 
 // --- إعدادات أولية ---
 dotenv.config();
-connectDB().then(() => {
-    Settings.initialize();
-});
+connectDB(); // استدعاء دالة الاتصال بقاعدة البيانات
+
 const app = express();
 
-// --- وسطاء أساسية ---
-app.use(cors());
-app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// ====================================================================
+// **الإصلاح الرئيسي هنا: إعدادات CORS المخصصة للإنتاج**
+// ====================================================================
+// قائمة النطاقات المسموح لها بالوصول
+const allowedOrigins = [
+    'http://localhost:5173', // للسماح بالتطوير المحلي
+    'https://zafatqueen.com'   // **رابط الواجهة الأمامية المنشورة**
+];
 
-// ====================================================================
-// **تحديث: مسار جلب الملفات أصبح يدعم الترقيم (Pagination)**
-// ====================================================================
+const corsOptions = {
+    origin: function (origin, callback) {
+        // السماح بالطلبات التي لا تحتوي على origin (مثل Postman أو تطبيقات الموبايل) أو الموجودة في القائمة
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    credentials: true, // مهم للسماح بإرسال التوكن
+};
+
+app.use(cors(corsOptions));
+app.use(express.json());
+
+// **تعديل بسيط لضمان المسار الصحيح على Railway**
+const uploadsPath = path.join(__dirname, 'uploads');
+app.use('/uploads', express.static(uploadsPath));
+
+// مسار جلب الملفات من مجلد uploads مع الترقيم
 app.get('/api/media/files', async (req, res) => {
     try {
-        const uploadsDirectory = path.join(__dirname, 'uploads');
-        const allFiles = await fs.readdir(uploadsDirectory);
+        // التأكد من وجود المجلد قبل محاولة قراءته
+        await fs.access(uploadsPath);
+        const allFiles = await fs.readdir(uploadsPath);
 
-        // 1. تصفية وترتيب جميع الملفات أولاً
         const allMediaFiles = allFiles
             .filter(file => path.extname(file))
             .map(file => {
@@ -51,16 +72,14 @@ app.get('/api/media/files', async (req, res) => {
             })
             .sort((a, b) => b.fileName.localeCompare(a.fileName));
 
-        // 2. تطبيق الترقيم
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 12; // 12 عنصرًا في كل مرة
+        const limit = parseInt(req.query.limit) || 12;
         const startIndex = (page - 1) * limit;
         const endIndex = page * limit;
         
         const paginatedFiles = allMediaFiles.slice(startIndex, endIndex);
         const totalPages = Math.ceil(allMediaFiles.length / limit);
 
-        // 3. إرسال الاستجابة مع معلومات الترقيم
         res.json({
             mediaFiles: paginatedFiles,
             page: page,
@@ -68,6 +87,10 @@ app.get('/api/media/files', async (req, res) => {
         });
 
     } catch (error) {
+        // إذا لم يكن المجلد موجودًا، أعد مصفوفة فارغة بدلاً من خطأ
+        if (error.code === 'ENOENT') {
+            return res.json({ mediaFiles: [], page: 1, pages: 1 });
+        }
         console.error('Error reading uploads directory:', error);
         res.status(500).json({ message: 'فشل في قراءة ملفات الوسائط' });
     }
@@ -89,5 +112,9 @@ app.use(notFound);
 app.use(errorHandler);
 
 // --- تشغيل الخادم ---
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`));
+const PORT = process.env.PORT || 5000; // Railway قد تفضل بورت مختلف
+const HOST = '0.0.0.0'; 
+
+app.listen(PORT, HOST, () => {
+    console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+});
