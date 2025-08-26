@@ -6,7 +6,6 @@ const User = require('../models/userModel');
 const protect = async (req, res, next) => {
     let token;
 
-    // التحقق من أن التوكن موجود في الـ headers ويبدأ بكلمة Bearer
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
         try {
             // 1. استخلاص التوكن من الـ header
@@ -15,14 +14,22 @@ const protect = async (req, res, next) => {
             // 2. التحقق من صحة التوكن وفك تشفيره
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-            // 3. جلب بيانات المستخدم من قاعدة البيانات باستخدام الـ id الموجود في التوكن
-            //    وإرفاقها مع كائن الطلب (req) حتى نتمكن من استخدامها في أي مسار محمي
-            req.user = await User.findById(decoded.id).select('-password'); // لا نريد جلب كلمة المرور
+            // 3. جلب بيانات المستخدم باستخدام Sequelize
+            // findByPk هو البديل لـ findById
+            req.user = await User.findByPk(decoded.id);
 
-            next(); // اسمح للطلب بالمرور إلى الخطوة التالية (وحدة التحكم)
+            // لم نعد بحاجة لـ .select('-password') لأن وظيفة toJSON في النموذج
+            // ستقوم بحذف كلمة المرور تلقائياً عند تحويل الكائن إلى JSON.
+
+            if (!req.user) {
+                res.status(401);
+                throw new Error('المستخدم المرتبط بهذا التوكن لم يعد موجودًا');
+            }
+
+            next();
         } catch (error) {
             console.error(error);
-            res.status(401); // Unauthorized
+            res.status(401);
             throw new Error('غير مصرح لك بالدخول، التوكن فشل');
         }
     }
@@ -33,24 +40,23 @@ const protect = async (req, res, next) => {
     }
 };
 
-// يمكننا إضافة وسيط آخر للتحقق من أن المستخدم هو superadmin
+// لا حاجة لتغيير هذه الدوال لأنها تعتمد على req.user الذي تم جلبه من دالة protect
 const isSuperAdmin = (req, res, next) => {
     if (req.user && req.user.role === 'superadmin') {
         next();
     } else {
-        res.status(403); // Forbidden
+        res.status(403);
         throw new Error('الوصول محظور. هذه الوظيفة متاحة للـ Super Admin فقط.');
     }
 };
+
 const isAdmin = (req, res, next) => {
-    // نفترض أن وسيط 'protect' قد تم استدعاؤه قبله
     if (req.user && (req.user.role === 'admin' || req.user.role === 'superadmin')) {
         next();
     } else {
-        res.status(403); // Forbidden
+        res.status(403);
         throw new Error('الوصول محظور. هذه الوظيفة متاحة للمدراء فقط.');
     }
 };
-
 
 module.exports = { protect, isSuperAdmin, isAdmin };

@@ -1,8 +1,9 @@
 // server/controllers/userController.js
 
+const { Op } = require('sequelize'); // لاستخدام operators مثل [Op.gt]
 const User = require('../models/userModel');
 const generateToken = require('../utils/generateToken');
-const crypto = require('crypto'); // <-- **أضف هذا السطر في الأعلى**
+const crypto = require('crypto');
 const sendEmail = require('../config/mailer');
 
 /**
@@ -12,13 +13,17 @@ const sendEmail = require('../config/mailer');
  */
 const registerUser = async (req, res) => {
     const { username, email, password } = req.body;
-    const userExists = await User.findOne({ email });
+
+    // Sequelize: User.findOne({ where: { email } })
+    const userExists = await User.findOne({ where: { email } });
 
     if (userExists) {
         res.status(400);
         throw new Error('المستخدم مسجل بالفعل');
     }
 
+    // Sequelize: User.create() تعمل بنفس الطريقة
+    // سيتم تشفير كلمة المرور تلقائياً بواسطة hook 'beforeCreate'
     const user = await User.create({
         username,
         email,
@@ -26,12 +31,11 @@ const registerUser = async (req, res) => {
     });
 
     if (user) {
+        // user.toJSON() سيتم استدعاؤها تلقائياً بواسطة res.json()
+        // مما يضمن وجود حقل '_id' وحذف 'password'
         res.status(201).json({
-            _id: user._id,
-            username: user.username,
-            email: user.email,
-            role: user.role,
-            token: generateToken(user._id),
+            ...user.toJSON(), // نستخدم user.toJSON() لضمان تطابق الحقول
+            token: generateToken(user.id), // نستخدم user.id وهو الـ Primary Key
         });
     } else {
         res.status(400);
@@ -46,20 +50,20 @@ const registerUser = async (req, res) => {
  */
 const loginUser = async (req, res) => {
     const { email, password } = req.body;
-    const user = await User.findOne({ email }).select('+password');
 
+    // Sequelize: لا نحتاج .select('+password') لأننا لم نستبعده من النموذج
+    const user = await User.findOne({ where: { email } });
+
+    // user.matchPassword هي الوظيفة التي عرفناها في النموذج
     if (user && (await user.matchPassword(password))) {
-    res.json({
-        _id: user._id,
-        username: user.username,
-        email: user.email,
-        role: user.role,
-        token: generateToken(user._id),
-    });
-} else {
-    res.status(401);
-    throw new Error('البريد الإلكتروني أو كلمة المرور غير صحيحة');
-}
+        res.json({
+            ...user.toJSON(),
+            token: generateToken(user.id),
+        });
+    } else {
+        res.status(401);
+        throw new Error('البريد الإلكتروني أو كلمة المرور غير صحيحة');
+    }
 };
 
 /**
@@ -68,7 +72,9 @@ const loginUser = async (req, res) => {
  * @access  Private/Admin
  */
 const getUsers = async (req, res) => {
-    const users = await User.find({}).select('-password');
+    // Sequelize: User.findAll()
+    // .toJSON() ستعمل على كل عنصر في المصفوفة تلقائياً
+    const users = await User.findAll();
     res.json(users);
 };
 
@@ -78,7 +84,8 @@ const getUsers = async (req, res) => {
  * @access  Private/Admin
  */
 const deleteUser = async (req, res) => {
-    const userToDelete = await User.findById(req.params.id);
+    // Sequelize: User.findByPk() للبحث بواسطة Primary Key
+    const userToDelete = await User.findByPk(req.params.id);
 
     if (userToDelete) {
         if (userToDelete.role === 'superadmin') {
@@ -86,12 +93,14 @@ const deleteUser = async (req, res) => {
             throw new Error('لا يمكن حذف حساب السوبر أدمن.');
         }
 
-        if (req.user._id.toString() === userToDelete._id.toString()) {
+        // req.user يأتي من middleware 'protect'
+        if (req.user.id === userToDelete.id) {
             res.status(400);
             throw new Error('لا يمكنك حذف حسابك الخاص.');
         }
 
-        await User.deleteOne({ _id: userToDelete._id });
+        // Sequelize: instance.destroy()
+        await userToDelete.destroy();
         res.json({ message: 'تم حذف المستخدم بنجاح' });
     } else {
         res.status(404);
@@ -105,25 +114,21 @@ const deleteUser = async (req, res) => {
  * @access  Private/SuperAdmin
  */
 const updateUserRole = async (req, res) => {
-    const userToUpdate = await User.findById(req.params.id);
+    const userToUpdate = await User.findByPk(req.params.id);
 
     if (userToUpdate) {
         const allowedRoles = ['user', 'admin'];
-        if (!allowedRoles.includes(req.body.role)) {
+        if (req.body.role && !allowedRoles.includes(req.body.role)) {
             res.status(400);
             throw new Error('الدور المحدد غير صالح.');
         }
 
         userToUpdate.role = req.body.role || userToUpdate.role;
 
+        // Sequelize: instance.save()
         const updatedUser = await userToUpdate.save();
 
-        res.json({
-            _id: updatedUser._id,
-            username: updatedUser.username,
-            email: updatedUser.email,
-            role: updatedUser.role,
-        });
+        res.json(updatedUser);
     } else {
         res.status(404);
         throw new Error('المستخدم غير موجود');
@@ -131,21 +136,19 @@ const updateUserRole = async (req, res) => {
 };
 
 const forgotPassword = async (req, res) => {
-    const user = await User.findOne({ email: req.body.email });
+    const user = await User.findOne({ where: { email: req.body.email } });
 
     if (!user) {
-        // نرسل رسالة نجاح حتى لو كان الإيميل غير موجود لحماية الخصوصية
         return res.status(200).json({ message: 'تم إرسال الإيميل إذا كان مسجلاً' });
     }
 
-    // إنشاء رمز إعادة التعيين
     const resetToken = crypto.randomBytes(20).toString('hex');
 
-    // تشفير الرمز وتخزينه في قاعدة البيانات
     user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // صلاحية 10 دقائق
+    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 دقائق
 
-    await user.save({ validateBeforeSave: false });
+    // Sequelize: لتخطي التحقق نستخدم { validate: false }
+    await user.save({ validate: false });
 
     try {
         await sendEmail({
@@ -156,9 +159,9 @@ const forgotPassword = async (req, res) => {
         res.status(200).json({ message: 'تم إرسال الإيميل بنجاح' });
     } catch (error) {
         console.error(error);
-        user.resetPasswordToken = undefined;
-        user.resetPasswordExpire = undefined;
-        await user.save({ validateBeforeSave: false });
+        user.resetPasswordToken = null; // null في SQL بدلاً من undefined
+        user.resetPasswordExpire = null;
+        await user.save({ validate: false });
         res.status(500);
         throw new Error('فشل في إرسال الإيميل');
     }
@@ -167,12 +170,14 @@ const forgotPassword = async (req, res) => {
 const resetPassword = async (req, res) => {
     const { token, password } = req.body;
     
-    // تشفير الرمز القادم من المستخدم لمقارنته
     const resetPasswordToken = crypto.createHash('sha256').update(token).digest('hex');
 
+    // Sequelize: استخدام Op.gt بدلاً من $gt
     const user = await User.findOne({
-        resetPasswordToken,
-        resetPasswordExpire: { $gt: Date.now() }, // تحقق من أن الرمز لم تنتهِ صلاحيته
+        where: {
+            resetPasswordToken,
+            resetPasswordExpire: { [Op.gt]: Date.now() },
+        }
     });
 
     if (!user) {
@@ -180,10 +185,10 @@ const resetPassword = async (req, res) => {
         throw new Error('الرمز غير صالح أو انتهت صلاحيته');
     }
 
-    // تعيين كلمة المرور الجديدة
+    // سيتم تشفير كلمة المرور الجديدة تلقائياً بواسطة hook 'beforeUpdate'
     user.password = password;
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpire = undefined;
+    user.resetPasswordToken = null;
+    user.resetPasswordExpire = null;
     await user.save();
 
     res.status(200).json({ message: 'تم تغيير كلمة المرور بنجاح' });
@@ -192,24 +197,20 @@ const resetPassword = async (req, res) => {
 const updatePassword = async (req, res) => {
     const { oldPassword, newPassword } = req.body;
 
-    // **الإصلاح هنا: إضافة تحقق من وجود المستخدم**
-    // نبحث عن المستخدم ونجلب كلمة المرور بشكل صريح
-    const user = await User.findById(req.user.id).select('+password');
+    // req.user.id يأتي من middleware
+    const user = await User.findByPk(req.user.id);
     
-    // التحقق من أننا وجدنا المستخدم
     if (!user) {
         res.status(404);
         throw new Error('لم يتم العثور على المستخدم');
     }
     
-    // التحقق من كلمة المرور القديمة
     const isMatch = await user.matchPassword(oldPassword);
     if (!isMatch) {
         res.status(401);
         throw new Error('كلمة المرور الحالية غير صحيحة');
     }
 
-    // إذا تطابقت، قم بتحديثها
     user.password = newPassword;
     await user.save();
     
@@ -222,7 +223,7 @@ module.exports = {
     getUsers,
     deleteUser,
     updateUserRole,
-    forgotPassword, // <-- **تأكد من وجود هذه**
-    resetPassword,  // <-- **تأكد من وجود هذه**
+    forgotPassword,
+    resetPassword,
     updatePassword
 };

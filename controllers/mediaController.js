@@ -3,6 +3,7 @@ const Media = require('../models/mediaModel');
 const path = require('path');
 const fs = require('fs');
 
+// هذه الدالة لا تتعلق بقاعدة البيانات، لذا تبقى كما هي
 const getFileType = (mimetype) => {
     if (mimetype.startsWith('image/')) return 'image';
     if (mimetype.startsWith('video/')) return 'video';
@@ -14,18 +15,21 @@ const getFileType = (mimetype) => {
 // @route   POST /api/media/upload
 // @access  Private/Admin
 exports.uploadFile = async (req, res) => {
-    // ... الكود الحالي بدون تغيير ...
     if (!req.file) {
         res.status(400);
         throw new Error('لم يتم إرفاق أي ملف');
     }
+    
+    // Sequelize: Media.create() مع تحديث uploadedBy
     const media = await Media.create({
         fileName: req.file.originalname,
         fileUrl: path.join('/uploads/media', req.file.filename).replace(/\\/g, '/'),
         fileType: getFileType(req.file.mimetype),
-        uploadedBy: req.user._id,
+        uploadedBy: req.user.id, // استخدام req.user.id
         size: req.file.size,
     });
+
+    // toJSON سيتم استدعاؤها تلقائياً لتحويل id إلى _id
     res.status(201).json(media);
 };
 
@@ -33,20 +37,22 @@ exports.uploadFile = async (req, res) => {
 // @route   GET /api/media
 // @access  Private/Admin
 exports.getAllMedia = async (req, res) => {
-    const limit = parseInt(req.query.limit) || 12; // عدد العناصر في كل صفحة
-    const page = parseInt(req.query.page) || 1;   // رقم الصفحة الحالية
+    const limit = parseInt(req.query.limit) || 12;
+    const page = parseInt(req.query.page) || 1;
+    const offset = (page - 1) * limit;
 
-    const count = await Media.countDocuments();
-    const mediaFiles = await Media.find()
-        .sort({ createdAt: -1 })
-        .limit(limit)
-        .skip(limit * (page - 1));
+    // Sequelize: استخدام findAndCountAll للترقيم الفعال
+    const { count, rows } = await Media.findAndCountAll({
+        order: [['createdAt', 'DESC']],
+        limit: limit,
+        offset: offset,
+    });
 
     res.json({
-        mediaFiles,
+        mediaFiles: rows, // 'rows' تحتوي على الملفات
         page,
         pages: Math.ceil(count / limit),
-        total: count
+        total: count // 'count' هو العدد الإجمالي
     });
 };
 
@@ -54,14 +60,18 @@ exports.getAllMedia = async (req, res) => {
 // @route   DELETE /api/media/:id
 // @access  Private/Admin
 exports.deleteMediaFile = async (req, res) => {
-    // ... الكود الحالي بدون تغيير ...
-    const mediaFile = await Media.findById(req.params.id);
+    // Sequelize: Model.findByPk() للبحث بواسطة ID
+    const mediaFile = await Media.findByPk(req.params.id);
+
     if (mediaFile) {
+        // منطق حذف الملف الفعلي من الخادم لا يتغير
         const filePath = path.join(__dirname, '..', mediaFile.fileUrl);
         if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
         }
-        await Media.deleteOne({ _id: mediaFile._id });
+        
+        // Sequelize: instance.destroy() لحذف السجل من قاعدة البيانات
+        await mediaFile.destroy();
         res.json({ message: 'تم حذف الملف بنجاح' });
     } else {
         res.status(404);

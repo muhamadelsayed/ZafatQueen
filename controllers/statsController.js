@@ -16,12 +16,20 @@ const getSummaryStats = async (req, res) => {
             totalUsers,
             latestProducts,
         ] = await Promise.all([
-            Product.countDocuments(),
-            Category.countDocuments(),
-            User.countDocuments(),
-            Product.find().sort({ createdAt: -1 }).limit(5).select('name price createdAt')
+            // Sequelize: Model.count()
+            Product.count(),
+            Category.count(),
+            User.count(),
+            // Sequelize: Model.findAll() with options
+            Product.findAll({
+                order: [['createdAt', 'DESC']], // بديل لـ .sort()
+                limit: 5, // بديل لـ .limit()
+                attributes: ['id', 'name', 'price', 'createdAt'] // بديل لـ .select()
+            })
         ]);
 
+        // ملاحظة: وظيفة toJSON التي عرفناها في النماذج ستقوم تلقائياً بتحويل 'id' إلى '_id'
+        // في كل منتج داخل مصفوفة latestProducts عند استدعاء res.json()
         res.json({
             totalProducts,
             totalCategories,
@@ -29,6 +37,7 @@ const getSummaryStats = async (req, res) => {
             latestProducts,
         });
     } catch (error) {
+        console.error("Error fetching summary stats:", error); // أفضل لإظهار الخطأ في السجل
         res.status(500);
         throw new Error('فشل في جلب الإحصائيات');
     }

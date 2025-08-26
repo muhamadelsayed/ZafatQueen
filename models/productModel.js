@@ -1,64 +1,152 @@
 // models/productModel.js
 
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/db');
 
-const productSchema = mongoose.Schema(
-    {
-        // ربط المنتج بالـ Admin الذي أنشأه
-        user: {
-            type: mongoose.Schema.Types.ObjectId,
-            required: true,
-            ref: 'User', // يشير إلى نموذج المستخدم
-        },
-        name: {
-            type: String,
-            required: [true, 'الرجاء إدخال اسم المنتج'],
-        },
-        image: {
-            type: String, // سيتم تخزين مسار الصورة هنا
-            required: true,
-        },
-        images: {
-            type: [String], // مصفوفة من مسارات الصور لمعرض الصور
-        },
-        description: {
-            type: String,
-            required: [true, 'الرجاء إدخال وصف المنتج'],
-        },
-        category: {
-            type: mongoose.Schema.Types.ObjectId, // النوع هو ID من Mongoose
-            ref: 'Category', // يشير إلى نموذج 'Category' الذي سننشئه
-            // لا يوجد required: true، مما يجعله اختياريًا
-        },
-        price: {
-            type: Number,
-            required: [true, 'الرجاء إدخال السعر الحالي للمنتج'],
-            default: 0,
-        },
-        originalPrice: {
-            type: Number,
-            // ليس مطلوبًا، سيتم عرضه فقط إذا كان أكبر من السعر الحالي
-        },
-        countInStock: {
-            type: Number,
-            required: function() { return !this.isVirtual; },
-            default: 0,
-        },
-        isVirtual: {
-            type: Boolean,
-            required: true,
-            default: false,
-        },
-        executionTime: {
-            type: String,
-            trim: true, // اختياري، لإزالة المسافات الزائدة
-        },
+const Product = sequelize.define('Product', {
+    // id (Primary Key) يُضاف تلقائياً
+
+    // --- الحقول الأساسية ---
+    name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+            notNull: {
+                msg: 'الرجاء إدخال اسم المنتج'
+            }
+        }
     },
-    {
-        timestamps: true,
-    }
-);
+    image: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+            notNull: {
+                msg: 'صورة المنتج حقل مطلوب'
+            }
+        }
+    },
+    images: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        get() {
+            const rawValue = this.getDataValue('images');
+            if (!rawValue) {
+                return [];
+            }
+            if (typeof rawValue === 'string') {
+                try {
+                    return JSON.parse(rawValue);
+                } catch (e) {
+                    return [];
+                }
+            }
+            return rawValue;
+        }
+    },
+    description: {
+        type: DataTypes.TEXT,
+        allowNull: false,
+        validate: {
+            notNull: {
+                msg: 'الرجاء إدخال وصف المنتج'
+            }
+        }
+    },
+    price: {
+        type: DataTypes.FLOAT,
+        allowNull: false,
+        defaultValue: 0,
+        validate: {
+            min: 0,
+            notNull: {
+                msg: 'الرجاء إدخال السعر الحالي للمنتج'
+            }
+        }
+    },
+    originalPrice: {
+        type: DataTypes.FLOAT,
+        allowNull: true,
+        validate: {
+            min: 0
+        }
+    },
+    countInStock: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+        allowNull: true,
+        validate: {
+            min: 0
+        }
+    },
+    isVirtual: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+    },
+    executionTime: {
+        type: DataTypes.STRING,
+        allowNull: true,
+    },
 
-const Product = mongoose.model('Product', productSchema);
+    // --- Foreign Keys ---
+    userId: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: {
+            model: 'Users',
+            key: 'id',
+        }
+    },
+    categoryId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: {
+            model: 'Categories',
+            key: 'id',
+        }
+    }
+}, {
+    // --- خيارات النموذج ---
+    timestamps: true,
+    hooks: {
+        beforeValidate: (product) => {
+            if (product.isVirtual === false) {
+                if (product.countInStock === null || typeof product.countInStock === 'undefined') {
+                    throw new Error('حقل الكمية المتوفرة مطلوب للمنتجات غير الافتراضية.');
+                }
+            } else {
+                product.countInStock = null;
+            }
+        }
+    }
+});
+
+// وظيفة لتعديل شكل الـ JSON الخارج ليتوافق مع الـ API القديم
+Product.prototype.toJSON = function () {
+    const values = { ...this.get() };
+
+    // 1. تحويل id إلى _id
+    values._id = values.id;
+    delete values.id;
+
+    // 2. إعادة تسمية userId إلى user
+    if (values.userId) {
+        values.user = values.userId;
+        delete values.userId;
+    }
+
+    // --- **الإصلاح الرئيسي هنا** ---
+    // 3. التعامل بذكاء مع حقل القسم
+    // لا تقم باستبدال كائن 'category' إذا كان موجودًا بالفعل (من include).
+    // إذا لم يكن موجودًا، استخدم الـ ID كقيمة احتياطية.
+    if (values.categoryId && !values.category) {
+        values.category = values.categoryId;
+    }
+    // احذف دائمًا categoryId لتجنب التكرار في الـ JSON.
+    delete values.categoryId;
+    // --- **نهاية الإصلاح** ---
+
+    return values;
+};
 
 module.exports = Product;

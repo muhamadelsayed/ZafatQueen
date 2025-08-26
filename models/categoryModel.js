@@ -1,34 +1,36 @@
-// server/models/categoryModel.js
+// models/categoryModel.js
 
-const mongoose = require('mongoose');
-// تأكد من أن المسار صحيح. إذا كان productModel.js في نفس المجلد، فهذا صحيح.
-const Product = require('./productModel'); 
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/db');
 
-const categorySchema = mongoose.Schema({
+const Category = sequelize.define('Category', {
+    // id (Primary Key) يُضاف تلقائياً
     name: {
-        type: String,
-        required: true,
-        unique: true,
-        trim: true
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: {
+            msg: 'اسم القسم يجب أن يكون فريداً'
+        },
+        // بديل عن trim: true في Mongoose
+        set(value) {
+            // trim any whitespace before saving
+            this.setDataValue('name', value.trim());
+        }
     }
-}, { timestamps: true });
-
-// Middleware: يتم تشغيله قبل تنفيذ عملية 'deleteOne' على مستند
-// { document: true, query: false } ضروري لجعل 'this' يشير إلى المستند الذي سيتم حذفه
-categorySchema.pre('deleteOne', { document: true, query: false }, async function(next) {
-    console.log(`[Middleware] يتم الآن حذف المنتجات المرتبطة بالقسم: ${this.name} (ID: ${this._id})`);
-    
-    try {
-        // ابحث عن كل المنتجات التي لها نفس الـ ID واحذفها
-        const result = await Product.deleteMany({ category: this._id });
-        console.log(`[Middleware] تم حذف ${result.deletedCount} منتج.`);
-        next(); // أكمل عملية الحذف الأصلية للقسم
-    } catch (error) {
-        console.error(`[Middleware] حدث خطأ أثناء حذف المنتجات: `, error);
-        next(error); // مرر الخطأ لإيقاف العملية
-    }
+}, {
+    // --- خيارات النموذج ---
+    timestamps: true,
+    // لا حاجة لـ hooks هنا، لأن الحذف المتتالي سيتم عن طريق تعريف العلاقة
 });
 
-const Category = mongoose.model('Category', categorySchema);
+
+// وظيفة لتعديل شكل الـ JSON الخارج ليتوافق مع الـ API القديم (_id)
+Category.prototype.toJSON = function () {
+    const values = { ...this.get() };
+    values._id = values.id; // أضف حقل _id
+    delete values.id;       // احذف الحقل الأصلي
+
+    return values;
+};
 
 module.exports = Category;

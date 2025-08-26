@@ -25,6 +25,18 @@ const storage = multer.diskStorage({
 });
 
 function checkFileType(file, cb) {
+    // --- الإضافة هنا ---
+    // إذا لم يكن هناك ملف مرفق أصلاً، اسمح للطلب بالمرور.
+    // الـ controller سيتعامل مع حالة عدم وجود ملف.
+    if (!file) {
+        return cb(null, true);
+    }
+    if (!file.originalname) {
+        // حالة خاصة إذا كان هناك حقل ولكن بدون ملف
+        return cb(null, false);
+    }
+    // --- نهاية الإضافة ---
+
     const filetypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi|mpeg|mp3|wav|ogg/;
     const mimetypes = /image|video|audio/;
     const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
@@ -35,9 +47,12 @@ function checkFileType(file, cb) {
     cb(new Error('يمكن رفع الصور وملفات الفيديو والصوت فقط!'));
 }
 
+
 const upload = multer({
     storage,
-    fileFilter: checkFileType
+    fileFilter: function (req, file, cb) {
+        checkFileType(file, cb);
+    }
 });
 
 const uploadFields = upload.fields([

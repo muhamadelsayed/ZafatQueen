@@ -1,74 +1,110 @@
-// server/models/settingsModel.js
+// models/settingsModel.js
 
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/db');
 
-const paymentMethodSchema = new mongoose.Schema({
-    title: { type: String, required: true, trim: true },
-    description: { type: String, trim: true },
-    imageUrl: { type: String, trim: true } // سيكون رابطًا من Uploadcare أو التخزين المحلي
-});
-
-const settingsSchema = new mongoose.Schema({
+const Settings = sequelize.define('Settings', {
+    // الحقل id (Primary Key) يُضاف تلقائياً
     siteName: {
-        type: String,
-        default: 'متجري',
-        trim: true,
+        type: DataTypes.STRING,
+        defaultValue: 'متجري',
     },
     logoUrl: {
-        type: String,
-        default: '/default-logo.png',
+        type: DataTypes.STRING,
+        defaultValue: '/default-logo.png',
     },
     aboutUsContent: {
-        type: String,
-        default: '<h1>من نحن</h1><p>اكتب هنا محتوى صفحة من نحن...</p>',
+        type: DataTypes.TEXT, // استخدام TEXT مناسب للمحتوى الطويل مثل HTML
+        defaultValue: '<h1>من نحن</h1><p>اكتب هنا محتوى صفحة من نحن...</p>',
     },
-    contactEmail: { type: String, trim: true },
-    contactPhone: { type: String, trim: true },
-    contactAddress: { type: String, trim: true },
-    // سنخزن رابط 'embed' من خرائط جوجل
-    googleMapsUrl: { type: String, trim: true },
-    paymentMethods: [paymentMethodSchema],
+    contactEmail: {
+        type: DataTypes.STRING,
+        allowNull: true,
+    },
+    contactPhone: {
+        type: DataTypes.STRING,
+        allowNull: true,
+    },
+    contactAddress: {
+        type: DataTypes.STRING,
+        allowNull: true,
+    },
+    googleMapsUrl: {
+        type: DataTypes.STRING,
+        allowNull: true,
+    },
+    // الحل الأمثل للحفاظ على نفس بنية الـ API هو استخدام نوع بيانات JSON
+    // سيقوم بتخزين مصفوفة الـ objects كما هي.
+    paymentMethods: {
+        type: DataTypes.JSON,
+        defaultValue: [],
+        allowNull: true,
+        get() {
+            // هذا الـ getter يضمن أن القيمة المرجعة هي دائمًا مصفوفة
+            const rawValue = this.getDataValue('paymentMethods');
+            if (!rawValue) {
+                return []; // إذا كانت القيمة null أو undefined، أرجع مصفوفة فارغة
+            }
+            // إذا كانت القيمة مخزنة كنص، قم بتحليلها
+            if (typeof rawValue === 'string') {
+                try {
+                    return JSON.parse(rawValue);
+                } catch (e) {
+                    return []; // في حالة وجود نص غير صالح، أرجع مصفوفة فارغة
+                }
+            }
+            return rawValue; // إذا كانت بالفعل مصفوفة، أرجعها كما هي
+        },
+    },
 }, {
-    // لا نستخدم capped collection هنا
-    collection: 'settings', 
-    timestamps: true // من الجيد دائمًا معرفة متى تم التحديث
-});
+    // --- خيارات النموذج ---
+    timestamps: true,
+    tableName: 'settings', // تحديد اسم الجدول بشكل صريح ليتطابق مع Mongoose 'collection'
 
-// Middleware: يتم تشغيله قبل كل عملية حفظ 'save'
-// سيمنع إنشاء مستند جديد إذا كان هناك واحد موجود بالفعل
-settingsSchema.pre('save', async function(next) {
-    const doc = this;
-    if (doc.isNew) {
-        const count = await mongoose.model('Settings').countDocuments();
-        if (count > 0) {
-            // نمرر خطأً لمنع إنشاء مستند ثانٍ
-            const err = new Error('لا يمكن إنشاء أكثر من مستند إعدادات واحد');
-            next(err);
-        } else {
-            next();
+    // --- Hooks (بديل عن Mongoose middleware) ---
+    hooks: {
+        // يتم تشغيله قبل محاولة إنشاء سجل جديد فقط
+        beforeCreate: async (settings, options) => {
+            // تحقق مما إذا كان هناك أي سجل موجود بالفعل في الجدول
+            const existingSettings = await Settings.findOne();
+            if (existingSettings) {
+                // إذا كان هناك سجل، قم بإلقاء خطأ لمنع الإنشاء
+                throw new Error('لا يمكن إنشاء أكثر من سجل إعدادات واحد');
+            }
         }
-    } else {
-        next();
     }
 });
 
+// --- Static Methods (بديل عن Mongoose statics) ---
 
-// دالة ثابتة لضمان وجود مستند إعدادات واحد على الأقل
-settingsSchema.statics.initialize = async function() {
+// دالة لضمان وجود سجل إعدادات واحد على الأقل عند بدء تشغيل التطبيق
+Settings.initialize = async function() {
     try {
-        const count = await this.countDocuments();
+        const count = await this.count();
         if (count === 0) {
             console.log('Initializing default settings document...');
-            // نستخدم 'new' ثم 'save' لتشغيل الـ middleware
-            const newSettings = new this();
-            await newSettings.save();
+            // 'create' ستقوم بتشغيل hook 'beforeCreate' تلقائياً
+            await this.create();
             console.log('Default settings created.');
         }
     } catch (error) {
-        console.error('Error initializing settings:', error);
+        // نتجاهل الخطأ إذا كان "لا يمكن إنشاء أكثر من سجل..."، لأنه يعني أن سجل آخر تم إنشاؤه للتو
+        if (error.message.includes('لا يمكن إنشاء أكثر من سجل')) {
+             console.log('Settings document already exists or is being created.');
+        } else {
+            console.error('Error initializing settings:', error);
+        }
     }
 };
 
-const Settings = mongoose.model('Settings', settingsSchema);
+// وظيفة لتعديل شكل الـ JSON الخارج ليتوافق مع الـ API القديم (_id)
+Settings.prototype.toJSON = function () {
+    const values = { ...this.get() };
+    values._id = values.id; // أضف حقل _id
+    delete values.id;       // احذف الحقل الأصلي
+
+    return values;
+};
+
 
 module.exports = Settings;

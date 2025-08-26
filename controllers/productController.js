@@ -1,5 +1,6 @@
 // server/controllers/productController.js
 
+const { Op } = require('sequelize');
 const Product = require('../models/productModel');
 const Category = require('../models/categoryModel');
 const fs = require('fs');
@@ -21,14 +22,22 @@ const createProduct = async (req, res) => {
         const newImages = req.files.images ? req.files.images.map(f => `/${f.path}`) : [];
         const existingImagesParsed = existingImages ? JSON.parse(existingImages) : [];
 
-        const product = new Product({
-            name, description, price, originalPrice, category, countInStock, isVirtual, executionTime,
-            user: req.user._id,
+        // Sequelize: Product.create() مع استخدام أسماء الحقول الجديدة (userId, categoryId)
+        const createdProduct = await Product.create({
+            name,
+            description,
+            price,
+            originalPrice,
+            countInStock,
+            isVirtual: isVirtual === 'true', // تأكد من تحويلها إلى boolean
+            executionTime,
             image: req.files.image ? `/${req.files.image[0].path}` : req.body.existingImage,
             images: [...existingImagesParsed, ...newImages],
+            userId: req.user.id, // استخدام req.user.id من middleware
+            categoryId: category || null, // استخدام categoryId
         });
 
-        const createdProduct = await product.save();
+        // toJSON() سيتم استدعاؤها تلقائياً
         res.status(201).json(createdProduct);
     } catch (error) {
         console.error(`Error in createProduct: ${error.message}`);
@@ -45,30 +54,50 @@ const getAllProducts = async (req, res) => {
     try {
         const pageSize = 12;
         const page = Number(req.query.pageNumber) || 1;
-        const filter = {};
         const { keyword, category, price_gte, price_lte } = req.query;
 
+        // بناء كائن الـ where الخاص بـ Sequelize
+        const whereClause = {};
+
         if (price_gte || price_lte) {
-            filter.price = {};
-            if (price_gte) filter.price.$gte = Number(price_gte);
-            if (price_lte) filter.price.$lte = Number(price_lte);
+            whereClause.price = {};
+            if (price_gte) whereClause.price[Op.gte] = Number(price_gte);
+            if (price_lte) whereClause.price[Op.lte] = Number(price_lte);
         }
         
-        if (category) filter.category = category;
+        if (category) whereClause.categoryId = category;
 
         if (keyword) {
-            const matchingCategories = await Category.find({ name: { $regex: keyword, $options: 'i' } }).select('_id');
-            const categoryIds = matchingCategories.map(cat => cat._id);
-            filter.$or = [
-                { name: { $regex: keyword, $options: 'i' } },
-                { description: { $regex: keyword, $options: 'i' } },
-                { category: { $in: categoryIds } }
+            // Sequelize: البحث في الأقسام المطابقة أولاً
+            const matchingCategories = await Category.findAll({
+                where: { name: { [Op.like]: `%${keyword}%` } },
+                attributes: ['id']
+            });
+            const categoryIds = matchingCategories.map(cat => cat.id);
+            
+            // Sequelize: بناء شرط $or
+            whereClause[Op.or] = [
+                { name: { [Op.like]: `%${keyword}%` } },
+                { description: { [Op.like]: `%${keyword}%` } },
+                { categoryId: { [Op.in]: categoryIds } }
             ];
         }
 
-        const count = await Product.countDocuments(filter);
-        const products = await Product.find(filter).populate('category', 'name').limit(pageSize).skip(pageSize * (page - 1)).sort({ createdAt: -1 });
-        res.json({ products, page, pages: Math.ceil(count / pageSize) });
+        // Sequelize: استخدام findAndCountAll للترقيم (Pagination)
+        const { count, rows } = await Product.findAndCountAll({
+            where: whereClause,
+            include: { // بديل لـ .populate()
+                model: Category,
+                as: 'category', // الاسم المستعار الذي عرفناه في server.js
+                attributes: ['name']
+            },
+            limit: pageSize,
+            offset: pageSize * (page - 1),
+            order: [['createdAt', 'DESC']],
+            distinct: true, // ضروري للحصول على count صحيح عند استخدام include
+        });
+        
+        res.json({ products: rows, page, pages: Math.ceil(count / pageSize) });
 
     } catch (error) {
         console.error(`Error in getAllProducts: ${error.message}`);
@@ -83,7 +112,17 @@ const getAllProducts = async (req, res) => {
 // ====================================================================
 const getProductById = async (req, res) => {
     try {
-        const product = await Product.findById(req.params.id).populate('category', 'name');
+        const product = await Product.findByPk(req.params.id, {
+            include: {
+                model: Category,
+                as: 'category',
+                // --- **الإصلاح الرئيسي هنا** ---
+                // أضف 'id' إلى قائمة attributes
+                attributes: ['id', 'name'] 
+                // --- **نهاية الإصلاح** ---
+            }
+        });
+
         if (product) {
             res.json(product);
         } else {
@@ -103,34 +142,51 @@ const getProductById = async (req, res) => {
 const updateProduct = async (req, res) => {
     try {
         const { name, description, price, originalPrice, category, countInStock, isVirtual, executionTime, existingImages, existingImage } = req.body;
-        const product = await Product.findById(req.params.id);
+        const product = await Product.findByPk(req.params.id);
 
         if (product) {
+            // تحديث الحقول مع تنقية البيانات (كما فعلنا سابقًا)
             product.name = name ?? product.name;
             product.description = description ?? product.description;
-            // ... باقي الحقول
-            product.isVirtual = isVirtual ?? product.isVirtual;
             product.executionTime = executionTime ?? product.executionTime;
+            product.price = price !== undefined ? Number(price) : product.price;
+            product.originalPrice = originalPrice ? Number(originalPrice) : null;
+            product.countInStock = countInStock ? Number(countInStock) : null;
+            product.categoryId = category ? Number(category) : null;
+product.isVirtual = (String(isVirtual) === 'true');
 
-            // تحديث الصورة الرئيسية
-            if (req.files.image) {
+            // تحديث الوسائط (كما فعلنا سابقًا)
+            if (req.files && req.files.image) {
                 product.image = `/${req.files.image[0].path}`;
             } else if (existingImage) {
                 product.image = existingImage;
             }
 
-            // تحديث معرض الصور
-            const newImages = req.files.images ? req.files.images.map(f => `/${f.path}`) : [];
+            const newImages = (req.files && req.files.images) ? req.files.images.map(f => `/${f.path}`) : [];
             const existingImagesParsed = existingImages ? JSON.parse(existingImages) : [];
             product.images = [...existingImagesParsed, ...newImages];
             
-            const updatedProduct = await product.save();
-            res.json(updatedProduct);
+            // 1. احفظ التغييرات
+            await product.save();
+
+            // --- **الإصلاح الرئيسي هنا** ---
+            // 2. أعد تحميل المنتج المحدث مع تفاصيل القسم
+            const updatedProductWithCategory = await Product.findByPk(product.id, {
+                include: {
+                    model: Category,
+                    as: 'category',
+                    attributes: ['name']
+                }
+            });
+
+            // 3. أرسل المنتج المحدث بالكامل كرد
+            res.json(updatedProductWithCategory);
+
         } else {
             res.status(404).json({ message: 'المنتج غير موجود' });
         }
     } catch (error) {
-        console.error(`Error in updateProduct: ${error.message}`);
+        console.error(`Error in updateProduct:`, error);
         res.status(500).json({ message: 'خطأ في الخادم' });
     }
 };
@@ -142,8 +198,9 @@ const updateProduct = async (req, res) => {
 // ====================================================================
 const deleteProduct = async (req, res) => {
     try {
-        const product = await Product.findById(req.params.id);
+        const product = await Product.findByPk(req.params.id);
         if (product) {
+            // منطق حذف الملفات من السيرفر لا يتغير
             const deleteFile = (filePath) => {
                 if (filePath && filePath.length > 1) {
                     const fullPath = path.join(__dirname, '..', filePath);
@@ -152,7 +209,9 @@ const deleteProduct = async (req, res) => {
             };
             deleteFile(product.image);
             if (product.images?.length) product.images.forEach(img => deleteFile(img));
-            await product.deleteOne({ _id: req.params.id });
+
+            // Sequelize: instance.destroy()
+            await product.destroy();
             res.json({ message: 'تم حذف المنتج بنجاح' });
         } else {
             res.status(404).json({ message: 'المنتج غير موجود' });
